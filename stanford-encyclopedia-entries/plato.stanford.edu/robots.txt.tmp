@@ -1,0 +1,31 @@
+crawl-delay: 5
+
+User-agent: *
+Disallow: /MathJax/
+Disallow: /archives/
+Disallow: /cgi-bin/
+Disallow: /ck-editor/
+Disallow: /css/
+Disallow: /diffs/
+Disallow: /font/
+Disallow: /inc/
+Disallow: /js/
+Disallow: /referer/
+Disallow: /rss/
+Disallow: /subject-editors/
+Disallow: /tmp/
+Disallow: /symbols/
+Disallow: /usage/
+Disallow: /wwwstat/
+Disallow: /search/
+Disallow: /perl/
+
+User-Agent: ia_archiver
+Disallow: /
+
+User-Agent: W3C-checklink
+Disallow:
+
+user-agent: Pinterestbot
+allow: /entries/
+
