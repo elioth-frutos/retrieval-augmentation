@@ -1,11 +1,39 @@
 import tiktoken
 import pinecone
-import hashlib
+from uuid import uuid4
 from langchain.document_loaders import UnstructuredHTMLLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import Pinecone
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import RetrievalQAWithSourcesChain
 from tqdm.auto import tqdm
 from getpass import getpass
+
+# Get the Pinecone API key.
+PINECONE_API_KEY = getpass("Pinecone API Key: ")
+# Get the Pinecone environment (found in the API section).
+PINECONE_ENV = input("Pinecone environment: ")
+
+# Set the name for the new Pinecone index.
+index_name = 'stanford-enc-retrieval-augmentation'
+
+# Initilize a Python "instance" of Pinecone.
+pinecone.init(
+    api_key=PINECONE_API_KEY,
+    environment=PINECONE_ENV
+)
+
+# If the given index doesn't exist, create a new one.
+if index_name not in pinecone.list_indexes():
+    pinecone.create_index(
+        name=index_name,
+        metric='dotproduct',
+        dimension=1536 # 1536 dim of text-embedding-ada-002
+    )
+
+# Select the given Pinecone index.
+index = pinecone.GRPCIndex(index_name)
 
 # Load an HTML document stored in the file system.
 loader = UnstructuredHTMLLoader(
@@ -50,64 +78,66 @@ embed = OpenAIEmbeddings(
 data = loader.load()
 
 # Array to store the processed data.
-documents = []
-m = hashlib.md5()
+
+batch_limit = 100
+
+texts = []
+metadatas = []
+
 
 # For every document (webpage) divide the text data into smaller chunks
 # and reformat every chunk of text.
 for doc in tqdm(data):
 
     # Save the url of the page in the "source" field of the metadata.
-    url = doc.metadata['source'].replace(
+    metadata = {
+        'source': doc.metadata['source'].replace(
         './stanford-encyclopedia-entries', 'https://')
-
-    # Use the MD5 hashing algorithm to create a unique ID (for the page).
-    m.update(url.encode('utf-8'))
-    uid = m.hexdigest()[:12]
+    }
 
     # Split the page into chunks of text.
     chunks = text_splitter.split_text(doc.page_content)
 
-    # Reformat all of the chunks and store it in an array.
-    for i, chunk in enumerate(chunks):
-        documents.append({
-            # Unique ID for every chunk of text.
-            'id': f'{uid}-{i}',
-            'text': chunk,
-            'source': url
-        })
+    chunks_metadatas = [{
+        "chunk": j, "text": text, **metadata
+    } for j, text in enumerate(chunks)]
 
-###########################
-print(documents[30])
-print(len(documents))
-###########################
+    texts.extend(chunks)
+    metadatas.extend(chunks_metadatas)
 
-# Create vector embeddings from the chunks of text.
-#vectors = embed.embed_documents(chunks)
+    # if we have reached the batch_limit we can add texts
+    if len(texts) >= batch_limit:
+        ids = [str(uuid4()) for _ in range(len(texts))]
+        embeds = embed.embed_documents(texts)
+        index.upsert(vectors=zip(ids, embeds, metadatas))
+        texts = []
+        metadatas = []
 
-# Get the Pinecone API key.
-PINECONE_API_KEY = getpass("Pinecone API Key: ")
-# Get the Pinecone environment (found in the API section).
-PINECONE_ENV = input("Pinecone environment: ")
+if len(texts) > 0:
+    ids = [str(uuid4()) for _ in range(len(texts))]
+    embeds = embed.embed_documents(texts)
+    index.upsert(vectors=zip(ids, embeds, metadatas))
 
-# Set the name for the new Pinecone index.
-index_name = 'stanford-enc-retrieval-augmentation'
+# Normal Pinecone index.
+index = pinecone.Index(index_name)
 
-# Initilize a Python "instance" of Pinecone.
-pinecone.init(
-    api_key=PINECONE_API_KEY,
-    environment=PINECONE_ENV
-)
+text_field = "text"
 
-# If the given index doesn't exist, create a new one.
-if index_name not in pinecone.list_indexes():
-    pinecone.create_index(
-        name=index_name,
-        metric='dotproduct',
-        dimension=len(vectors[0])  # 1536 dim of text-embedding-ada-002
+vectorstore = Pinecone(
+    index, embed.embed_query, text_field
     )
 
-# Select the given Pinecone index.
-#index = pinecone.GRPCIndex(index_name)
+# completion llm
+llm = ChatOpenAI(
+    openai_api_key=OPENAI_API_KEY,
+    model_name='gpt-3.5-turbo',
+    temperature=0.0
+)
 
-#index.describe_index_stats()
+qa = RetrievalQAWithSourcesChain.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=vectorstore.as_retriever()
+)
+
+print(qa("What are the two problems that the divine command theory faces as a theory of political obligation?"))
